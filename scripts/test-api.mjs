@@ -4,8 +4,8 @@ import { setTimeout as wait } from "node:timers/promises";
 import { connectDB, pool } from "../src/db/connection.js";
 import { initDatabase } from "../src/db/initDatabase.js";
 
-const port = process.env.PORT || 3001;
-const baseUrl = `http://127.0.0.1:${port}`;
+const testPort = process.env.TEST_PORT || 3099;
+const baseUrl = `http://127.0.0.1:${testPort}`;
 const stamp = Date.now().toString().slice(-6);
 
 const adminEmail = `admin.${stamp}@finanzas.test`;
@@ -59,7 +59,7 @@ const expectStatus = async (name, method, path, expected, options) => {
 const startServer = async () => {
   const child = spawn("node", ["index.js"], {
     cwd: process.cwd(),
-    env: { ...process.env, PORT: String(port) },
+    env: { ...process.env, PORT: String(testPort) },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
