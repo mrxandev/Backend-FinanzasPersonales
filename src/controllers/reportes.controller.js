@@ -29,15 +29,21 @@ export const getReporteCortes = async (req, res) => {
     const totalEgresos = result.rows.reduce((acc, row) => acc + parseFloat(row.total_egresos || 0), 0);
     const superoLimiteCount = result.rows.filter((row) => row.supero_limite).length;
 
+    const resumenData = {
+      total_cortes: result.rows.length,
+      total_periodos_cerrados: result.rows.length,
+      total_ingresos: totalIngresos,
+      total_egresos: totalEgresos,
+      balance_neto_acumulado: totalIngresos - totalEgresos,
+      balance_neto: totalIngresos - totalEgresos,
+      cortes_superaron_limite: superoLimiteCount,
+      meses_supero_limite: superoLimiteCount,
+    };
+
     return ok(res, "Reporte consolidado de cortes obtenido exitosamente", {
       anio,
-      totales_consolidados: {
-        total_periodos_cerrados: result.rows.length,
-        total_ingresos: totalIngresos,
-        total_egresos: totalEgresos,
-        balance_neto_acumulado: totalIngresos - totalEgresos,
-        meses_supero_limite: superoLimiteCount,
-      },
+      resumen: resumenData,
+      totales_consolidados: resumenData,
       cortes: result.rows,
     });
   } catch (error) {
@@ -171,42 +177,56 @@ export const getReporteLimites = async (req, res) => {
   try {
     const targetUserId = req.user.role === "ADMIN" && req.query.usuario_id ? req.query.usuario_id : req.user.id;
 
-    const query = `
-      SELECT
-        u.id AS usuario_id,
-        u.nombre,
-        u.cedula,
-        u.limite_egresos,
-        COUNT(c.id) AS total_cortes_evaluados,
-        COUNT(CASE WHEN c.supero_limite = true THEN 1 END) AS cortes_con_exceso,
-        COALESCE(AVG(c.total_egresos), 0) AS gasto_mensual_promedio,
-        COALESCE(MAX(c.total_egresos), 0) AS gasto_mensual_maximo,
-        COALESCE(AVG(CASE WHEN c.supero_limite = true THEN (c.total_egresos - c.limite_egresos_periodo) END), 0) AS exceso_promedio
-      FROM usuarios u
-      LEFT JOIN cortes_mensuales c ON c.usuario_id = u.id
-      WHERE (u.id = $1 OR $2 = 'ADMIN')
-        AND u.limite_egresos > 0
-      GROUP BY u.id, u.nombre, u.cedula, u.limite_egresos
-      ORDER BY cortes_con_exceso DESC, u.nombre ASC
-    `;
+    const userQuery = await pool.query(`SELECT limite_egresos FROM usuarios WHERE id = $1`, [targetUserId]);
+    const globalLimit = userQuery.rows[0]?.limite_egresos ? parseFloat(userQuery.rows[0].limite_egresos) : 0;
 
-    const result = await pool.query(query, [targetUserId, req.user.role]);
+    const cortesQuery = await pool.query(
+      `SELECT
+        c.id, c.anio, c.mes, c.fecha_corte, c.balance_inicial, c.total_ingresos, c.total_egresos,
+        c.limite_egresos_periodo, c.supero_limite,
+        CASE
+          WHEN c.limite_egresos_periodo > 0 THEN ROUND((c.total_egresos / c.limite_egresos_periodo) * 100, 2)
+          ELSE 0
+        END AS porcentaje_consumido
+       FROM cortes_mensuales c
+       WHERE (c.usuario_id = $1 OR $2 = 'ADMIN')
+       ORDER BY c.anio DESC, c.mes DESC`,
+      [targetUserId, req.user.role]
+    );
 
-    const formatted = result.rows.map((r) => ({
-      usuario_id: r.usuario_id,
-      nombre: r.nombre,
-      cedula: r.cedula,
-      limite_egresos: parseFloat(r.limite_egresos),
-      total_cortes_evaluados: parseInt(r.total_cortes_evaluados, 10),
-      cortes_con_exceso: parseInt(r.cortes_con_exceso, 10),
-      gasto_mensual_promedio: parseFloat(parseFloat(r.gasto_mensual_promedio).toFixed(2)),
-      gasto_mensual_maximo: parseFloat(r.gasto_mensual_maximo),
-      exceso_promedio: parseFloat(parseFloat(r.exceso_promedio).toFixed(2)),
+    const historial = cortesQuery.rows.map((row) => ({
+      id: row.id,
+      anio: row.anio,
+      mes: row.mes,
+      fecha_corte: row.fecha_corte,
+      limite_egresos_periodo: parseFloat(row.limite_egresos_periodo || globalLimit || 0),
+      total_egresos: parseFloat(row.total_egresos || 0),
+      porcentaje_consumido: parseFloat(row.porcentaje_consumido || 0),
+      supero_limite: Boolean(row.supero_limite),
     }));
 
+    const totalEvaluaciones = historial.length;
+    const periodosExcedidos = historial.filter((h) => h.supero_limite).length;
+    const periodosEnRegla = totalEvaluaciones - periodosExcedidos;
+
+    const estadisticas = {
+      total_evaluaciones: totalEvaluaciones,
+      periodos_en_regla: periodosEnRegla,
+      periodos_excedidos: periodosExcedidos,
+    };
+
     return ok(res, "Reporte de cumplimiento de límites obtenido exitosamente", {
-      total_usuarios_con_limite: formatted.length,
-      usuarios: formatted,
+      estadisticas,
+      historial,
+      total_usuarios_con_limite: totalEvaluaciones > 0 ? 1 : 0,
+      usuarios: [
+        {
+          usuario_id: targetUserId,
+          limite_egresos: globalLimit,
+          total_cortes_evaluados: totalEvaluaciones,
+          cortes_con_exceso: periodosExcedidos,
+        },
+      ],
     });
   } catch (error) {
     console.error("Error en getReporteLimites:", error);
@@ -221,6 +241,7 @@ export const getResumenAnual = async (req, res) => {
 
     const meses = Array.from({ length: 12 }, (_, i) => i + 1);
 
+    // Cortes cerrados del año
     const cortesQuery = await pool.query(
       `SELECT mes, balance_inicial, total_ingresos, total_egresos, balance_al_corte, supero_limite
        FROM cortes_mensuales
@@ -234,6 +255,26 @@ export const getResumenAnual = async (req, res) => {
       cortesMap.set(c.mes, c);
     }
 
+    // Transacciones del año agrupadas por mes y tipo
+    const trxQuery = await pool.query(
+      `SELECT
+        EXTRACT(MONTH FROM fecha_transaccion)::INTEGER AS mes,
+        tipo_transaccion,
+        COALESCE(SUM(monto), 0) AS total
+       FROM transacciones
+       WHERE usuario_id = $1
+         AND EXTRACT(YEAR FROM fecha_transaccion)::INTEGER = $2
+         AND estado = 'APLICADA'
+       GROUP BY EXTRACT(MONTH FROM fecha_transaccion)::INTEGER, tipo_transaccion`,
+      [targetUserId, anio]
+    );
+
+    const trxMap = new Map();
+    for (const r of trxQuery.rows) {
+      const key = `${r.mes}_${r.tipo_transaccion}`;
+      trxMap.set(key, parseFloat(r.total));
+    }
+
     const mesesNombres = [
       "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
       "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
@@ -241,14 +282,24 @@ export const getResumenAnual = async (req, res) => {
 
     const serieMensual = meses.map((m) => {
       const c = cortesMap.get(m);
+      const ingTrx = trxMap.get(`${m}_INGRESO`) || 0;
+      const egrTrx = trxMap.get(`${m}_EGRESO`) || 0;
+
+      const totalIng = c ? parseFloat(c.total_ingresos) : ingTrx;
+      const totalEgr = c ? parseFloat(c.total_egresos) : egrTrx;
+      const balNeto = c ? parseFloat(c.balance_al_corte) : totalIng - totalEgr;
+
       return {
         mes: m,
         nombre_mes: mesesNombres[m - 1],
         balance_inicial: c ? parseFloat(c.balance_inicial) : 0,
-        total_ingresos: c ? parseFloat(c.total_ingresos) : 0,
-        total_egresos: c ? parseFloat(c.total_egresos) : 0,
-        balance_al_corte: c ? parseFloat(c.balance_al_corte) : 0,
-        supero_limite: c ? c.supero_limite : false,
+        total_ingresos: totalIng,
+        ingresos: totalIng,
+        total_egresos: totalEgr,
+        egresos: totalEgr,
+        balance_al_corte: balNeto,
+        balance: balNeto,
+        supero_limite: c ? Boolean(c.supero_limite) : false,
         cerrado: Boolean(c),
       };
     });
