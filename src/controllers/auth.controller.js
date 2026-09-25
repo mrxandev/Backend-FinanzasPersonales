@@ -31,7 +31,19 @@ export const register = async (req, res) => {
     email = email.trim().toLowerCase();
     nombre = nombre.trim();
     fecha_corte = parseInt(fecha_corte, 10) || 1;
-    limite_egresos = parseFloat(limite_egresos) || 0;
+    const lim = parseFloat(limite_egresos);
+
+    if (isNaN(lim) || lim < 0) {
+      return fail(res, "El límite mensual de egresos debe ser mayor o igual a RD$ 0.00", 400);
+    }
+
+    if (lim > 999999999999.99) {
+      return fail(res, "El límite mensual de egresos no puede superar los RD$ 999,999,999,999.99", 400);
+    }
+
+    if (fecha_corte < 1 || fecha_corte > 31) {
+      return fail(res, "El día de corte debe ser un número entre 1 y 31", 400);
+    }
 
     if (cedula.length !== 9 && cedula.length !== 11) {
       return fail(res, "La cédula debe tener 11 dígitos o el RNC 9 dígitos", 400);
@@ -49,14 +61,6 @@ export const register = async (req, res) => {
       return fail(res, "La contraseña debe tener al menos 6 caracteres", 400);
     }
 
-    if (fecha_corte < 1 || fecha_corte > 31) {
-      return fail(res, "La fecha de corte debe ser un día entre 1 y 31", 400);
-    }
-
-    if (limite_egresos < 0) {
-      return fail(res, "El límite de egresos no puede ser negativo", 400);
-    }
-
     const existingUser = await pool.query(
       "SELECT id FROM usuarios WHERE email = $1 OR cedula = $2",
       [email, cedula]
@@ -72,7 +76,7 @@ export const register = async (req, res) => {
       `INSERT INTO usuarios (cedula, nombre, email, password, role, estado, tipo_persona, limite_egresos, fecha_corte)
        VALUES ($1, $2, $3, $4, 'USER', 'ACTIVO', $5, $6, $7)
        RETURNING ${publicUserFields}`,
-      [cedula, nombre, email, hashedPassword, tipo_persona.toUpperCase(), limite_egresos, fecha_corte]
+      [cedula, nombre, email, hashedPassword, tipo_persona.toUpperCase(), lim, fecha_corte]
     );
 
     const user = result.rows[0];

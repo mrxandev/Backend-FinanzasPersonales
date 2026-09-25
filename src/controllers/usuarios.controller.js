@@ -143,7 +143,19 @@ export const createUsuario = async (req, res) => {
     email = email.trim().toLowerCase();
     nombre = nombre.trim();
     fecha_corte = parseInt(fecha_corte, 10) || 1;
-    limite_egresos = parseFloat(limite_egresos) || 0;
+    const lim = parseFloat(limite_egresos);
+
+    if (isNaN(lim) || lim < 0) {
+      return fail(res, "El límite mensual de egresos debe ser mayor o igual a RD$ 0.00", 400);
+    }
+
+    if (lim > 999999999999.99) {
+      return fail(res, "El límite mensual de egresos no puede superar los RD$ 999,999,999,999.99", 400);
+    }
+
+    if (fecha_corte < 1 || fecha_corte > 31) {
+      return fail(res, "El día de corte debe ser un número entre 1 y 31", 400);
+    }
 
     if (cedula.length !== 9 && cedula.length !== 11) {
       return fail(res, "La cédula debe tener 11 dígitos o el RNC 9 dígitos", 400);
@@ -203,6 +215,23 @@ export const updateUsuario = async (req, res) => {
     const allowedFields = ["nombre", "limite_egresos", "tipo_persona", "fecha_corte"];
     if (req.user.role === "ADMIN") {
       allowedFields.push("role", "estado");
+    }
+
+    if (req.body.limite_egresos !== undefined) {
+      const lim = parseFloat(req.body.limite_egresos);
+      if (isNaN(lim) || lim < 0) {
+        return fail(res, "El límite mensual de egresos debe ser mayor o igual a RD$ 0.00", 400);
+      }
+      if (lim > 999999999999.99) {
+        return fail(res, "El límite mensual de egresos no puede superar los RD$ 999,999,999,999.99", 400);
+      }
+    }
+
+    if (req.body.fecha_corte !== undefined) {
+      const corteDay = parseInt(req.body.fecha_corte, 10);
+      if (isNaN(corteDay) || corteDay < 1 || corteDay > 31) {
+        return fail(res, "El día de corte debe ser un número entre 1 y 31", 400);
+      }
     }
 
     const { fields, values, setClause } = buildSetClause(req.body, allowedFields);
