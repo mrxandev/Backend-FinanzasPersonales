@@ -3,6 +3,7 @@ import { pool } from "../db/connection.js";
 import { appendFilter, buildSetClause, pagination } from "../utils/db.js";
 import { fail, ok } from "../utils/response.js";
 import { createSystemLog } from "../utils/systemLog.js";
+import { isValidDominicanCedula, isValidRNC } from "../utils/validation.js";
 import { normalizeCedula, publicUserFields } from "./auth.controller.js";
 
 export const getActivePeriodDates = (fechaCorteDay = 1, targetDate = new Date()) => {
@@ -143,6 +144,18 @@ export const createUsuario = async (req, res) => {
     nombre = nombre.trim();
     fecha_corte = parseInt(fecha_corte, 10) || 1;
     limite_egresos = parseFloat(limite_egresos) || 0;
+
+    if (cedula.length !== 9 && cedula.length !== 11) {
+      return fail(res, "La cédula debe tener 11 dígitos o el RNC 9 dígitos", 400);
+    }
+
+    if (cedula.length === 11 && !isValidDominicanCedula(cedula)) {
+      return fail(res, "La cédula ingresada no es válida según el algoritmo de verificación dominicano (Módulo 10)", 400);
+    }
+
+    if (cedula.length === 9 && !isValidRNC(cedula)) {
+      return fail(res, "El RNC ingresado no es válido según el algoritmo de verificación dominicano", 400);
+    }
 
     const existingUser = await pool.query(
       "SELECT id FROM usuarios WHERE email = $1 OR cedula = $2",

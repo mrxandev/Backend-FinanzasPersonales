@@ -2,6 +2,7 @@ import { pool } from "../db/connection.js";
 import { appendFilter, buildSetClause, pagination } from "../utils/db.js";
 import { fail, ok } from "../utils/response.js";
 import { createSystemLog } from "../utils/systemLog.js";
+import { checkClosedPeriod } from "../utils/validation.js";
 import { getActivePeriodDates } from "./usuarios.controller.js";
 
 const transaccionSelect = `
@@ -189,6 +190,19 @@ export const createTransaccion = async (req, res) => {
     if (!tipo_transaccion || !monto) {
       await client.query("ROLLBACK");
       return fail(res, "tipo_transaccion y monto son obligatorios", 400);
+    }
+
+    const todayStr = new Date().toISOString().split("T")[0];
+    const txDateStr = String(fecha_transaccion).split("T")[0];
+    if (txDateStr > todayStr) {
+      await client.query("ROLLBACK");
+      return fail(res, "La fecha de la transacción no puede ser posterior a la fecha actual", 400);
+    }
+
+    const isClosed = await checkClosedPeriod(client, targetUserId, fecha_transaccion);
+    if (isClosed) {
+      await client.query("ROLLBACK");
+      return fail(res, "No se pueden registrar transacciones en un periodo mensual que ya ha sido cerrado", 400);
     }
 
     const upperTipo = tipo_transaccion.toUpperCase();
@@ -387,6 +401,23 @@ export const updateTransaccion = async (req, res) => {
       return fail(res, "No se puede modificar una transacción que ya ha sido anulada", 400);
     }
 
+    if (req.body.fecha_transaccion) {
+      const todayStr = new Date().toISOString().split("T")[0];
+      const newTxDate = String(req.body.fecha_transaccion).split("T")[0];
+      if (newTxDate > todayStr) {
+        return fail(res, "La fecha de la transacción no puede ser posterior a la fecha actual", 400);
+      }
+      const isNewClosed = await checkClosedPeriod(pool, transaccion.usuario_id, req.body.fecha_transaccion);
+      if (isNewClosed) {
+        return fail(res, "No se puede mover la transacción a un periodo mensual que ya ha sido cerrado", 400);
+      }
+    }
+
+    const isOriginalClosed = await checkClosedPeriod(pool, transaccion.usuario_id, transaccion.fecha_transaccion);
+    if (isOriginalClosed) {
+      return fail(res, "No se puede modificar una transacción de un periodo mensual que ya ha sido cerrado", 400);
+    }
+
     const allowedFields = [
       "monto",
       "tipo_pago_id",
@@ -465,6 +496,11 @@ export const anularTransaccion = async (req, res) => {
       return fail(res, "La transacción ya se encuentra anulada", 400);
     }
 
+    const isClosed = await checkClosedPeriod(pool, transaccion.usuario_id, transaccion.fecha_transaccion);
+    if (isClosed) {
+      return fail(res, "No se pueden anular transacciones en un periodo mensual que ya ha sido cerrado", 400);
+    }
+
     await pool.query(
       "UPDATE transacciones SET estado = 'ANULADA', updated_at = NOW() WHERE id = $1",
       [id]
@@ -490,6 +526,10 @@ export const anularTransaccion = async (req, res) => {
 export const deleteTransaccion = async (req, res) => {
   try {
     const { id } = req.params;
+
+    if (req.user.role !== "ADMIN") {
+      return fail(res, "Solo los administradores pueden eliminar transacciones del sistema", 403);
+    }
 
     const existingResult = await pool.query("SELECT * FROM transacciones WHERE id = $1", [id]);
     if (existingResult.rows.length === 0) {

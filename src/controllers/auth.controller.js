@@ -3,6 +3,7 @@ import { pool } from "../db/connection.js";
 import { generateToken } from "../utils/jwt.js";
 import { fail, ok } from "../utils/response.js";
 import { createSystemLog } from "../utils/systemLog.js";
+import { isValidDominicanCedula, isValidRNC } from "../utils/validation.js";
 
 export const publicUserFields = `
   id, cedula, nombre, email, role, estado, limite_egresos, tipo_persona, fecha_corte, created_at, updated_at
@@ -34,6 +35,14 @@ export const register = async (req, res) => {
 
     if (cedula.length !== 9 && cedula.length !== 11) {
       return fail(res, "La cédula debe tener 11 dígitos o el RNC 9 dígitos", 400);
+    }
+
+    if (cedula.length === 11 && !isValidDominicanCedula(cedula)) {
+      return fail(res, "La cédula ingresada no es válida según el algoritmo de verificación dominicano (Módulo 10)", 400);
+    }
+
+    if (cedula.length === 9 && !isValidRNC(cedula)) {
+      return fail(res, "El RNC ingresado no es válido según el algoritmo de verificación dominicano", 400);
     }
 
     if (password.length < 6) {

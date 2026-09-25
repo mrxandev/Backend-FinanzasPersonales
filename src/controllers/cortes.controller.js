@@ -162,15 +162,33 @@ export const procesarCorte = async (req, res) => {
     let { usuario_id, anio, mes, todos = false } = req.body;
 
     const now = new Date();
-    const targetAnio = parseInt(anio, 10) || now.getFullYear();
-    const targetMes = parseInt(mes, 10) || now.getMonth() + 1;
+    const currentYear = now.getUTCFullYear();
+    const currentMonth = now.getUTCMonth() + 1;
+
+    const targetAnio = parseInt(anio, 10) || currentYear;
+    const targetMes = parseInt(mes, 10) || currentMonth;
 
     if (targetMes < 1 || targetMes > 12) {
       await client.query("ROLLBACK");
       return fail(res, "El mes debe estar comprendido entre 1 y 12", 400);
     }
 
-    if (todos && req.user.role === "ADMIN") {
+    if (targetAnio > currentYear || (targetAnio === currentYear && targetMes > currentMonth)) {
+      await client.query("ROLLBACK");
+      return fail(res, "No se pueden procesar cortes de meses o años futuros", 400);
+    }
+
+    if (targetAnio === currentYear && targetMes === currentMonth) {
+      await client.query("ROLLBACK");
+      return fail(res, "No se puede procesar el corte del mes actual hasta que haya concluido", 400);
+    }
+
+    if (todos) {
+      if (req.user.role !== "ADMIN") {
+        await client.query("ROLLBACK");
+        return fail(res, "Solo los administradores pueden procesar cortes masivos para todos los usuarios", 403);
+      }
+
       const activeUsers = await client.query("SELECT id FROM usuarios WHERE estado = 'ACTIVO'");
       const procesados = [];
 
